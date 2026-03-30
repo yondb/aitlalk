@@ -9,8 +9,17 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: "var(--background)",
-        foreground: "var(--foreground)",
+        arena: {
+          bg: "#050505",
+          panel: "#1a1a1a",
+          border: "#2a2a2a",
+          matrix: "#00ff41",
+          paper: "#e8e0c8",
+          alert: "#ff3c00",
+        },
+      },
+      fontFamily: {
+        mono: ["var(--font-mono)", "Courier New", "monospace"],
       },
     },
   },
