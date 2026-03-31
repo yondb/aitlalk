@@ -3,6 +3,7 @@
 import Pusher from "pusher-js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDebateAudio } from "@/hooks/useDebateAudio";
+import { absApi } from "@/lib/client-api";
 import { XFilesShell } from "./XFilesShell";
 
 type Side = "A" | "B";
@@ -46,9 +47,22 @@ export function ModView({
   useDebateAudio(roomId);
 
   const refresh = useCallback(async () => {
-    const res = await fetch(`/api/rooms/${roomId}?mask=${mask}`);
+    const m = mask === "mod-a" ? "a" : "b";
+    const res = await fetch(
+      absApi(`/api/rooms/${encodeURIComponent(roomId)}?m=${m}`),
+      {
+        headers: { "X-Aitalk-View": mask },
+        cache: "no-store",
+      }
+    );
+    if (res.status === 404) {
+      setLoadError(
+        "Pokój nie istnieje. Dodaj na Vercelu zmienną REDIS_URL (cały redis://... z Storage) i Redeploy. Potem /setup na tej samej domenie co Mod A."
+      );
+      return;
+    }
     if (!res.ok) {
-      setLoadError("Room not found");
+      setLoadError(`Błąd serwera (${res.status})`);
       return;
     }
     const data = (await res.json()) as RoomApi;
@@ -155,12 +169,20 @@ export function ModView({
   async function startDebate() {
     setStarting(true);
     try {
-      const res = await fetch(`/api/debate/${roomId}/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ moderator: "A" }),
-      });
+      const res = await fetch(
+        absApi(`/api/debate/${encodeURIComponent(roomId)}/start`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ moderator: "A" }),
+        }
+      );
       if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error(
+            "Start: serwer nie widzi pokoju (404). W Vercelu dodaj REDIS_URL (redis://... z Storage), Redeploy, potem nowy pokój z /setup na tej samej domenie."
+          );
+        }
         const j = await res.json().catch(() => ({}));
         throw new Error((j as { error?: string }).error || "Start failed");
       }
@@ -176,11 +198,14 @@ export function ModView({
     if (!interveneText.trim()) return;
     setIntervening(true);
     try {
-      const res = await fetch(`/api/debate/${roomId}/intervene`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ side: mySide, text: interveneText.trim() }),
-      });
+      const res = await fetch(
+        absApi(`/api/debate/${encodeURIComponent(roomId)}/intervene`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ side: mySide, text: interveneText.trim() }),
+        }
+      );
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error((j as { error?: string }).error || "Intervention failed");

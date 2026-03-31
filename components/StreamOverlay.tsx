@@ -3,6 +3,7 @@
 import Pusher from "pusher-js";
 import { useEffect, useMemo, useState } from "react";
 import { useDebateAudio } from "@/hooks/useDebateAudio";
+import { absApi } from "@/lib/client-api";
 
 type Side = "A" | "B";
 
@@ -15,19 +16,38 @@ type RoomApi = {
   generationLocked: boolean;
 };
 
+const ROOM_HELP_PL =
+  "Pokój nie został znaleziony. Utwórz go na /setup na tej samej domenie. Na Vercelu włącz Redis (Storage → Create Database → Upstash) i dodaj KV_REST_API_URL oraz KV_REST_API_TOKEN w Environment Variables — bez tego pokoje nie są współdzielone między serwerami. Debata startuje z widoku Moderator A (przycisk Start), nie ze streamu.";
+
 export function StreamOverlay({ roomId }: { roomId: string }) {
   const [room, setRoom] = useState<RoomApi | null>(null);
   const [speaker, setSpeaker] = useState<Side | null>(null);
   const [fullText, setFullText] = useState("");
   const [visible, setVisible] = useState("");
   const [flash, setFlash] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useDebateAudio(roomId);
 
   useEffect(() => {
-    fetch(`/api/rooms/${roomId}?mask=none`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setRoom(d));
+    setFetchError(null);
+    fetch(absApi(`/api/rooms/${encodeURIComponent(roomId)}?m=n`), {
+      headers: { "X-Aitalk-View": "none" },
+      cache: "no-store",
+    })
+      .then(async (r) => {
+        if (r.status === 404) {
+          setFetchError(ROOM_HELP_PL);
+          return;
+        }
+        if (!r.ok) {
+          setFetchError(`Błąd ładowania pokoju (${r.status}).`);
+          return;
+        }
+        const d = (await r.json()) as RoomApi;
+        setRoom(d);
+      })
+      .catch(() => setFetchError("Nie udało się połączyć z API."));
   }, [roomId]);
 
   useEffect(() => {
@@ -118,6 +138,14 @@ export function StreamOverlay({ roomId }: { roomId: string }) {
 
       {flash ? (
         <div className="pointer-events-none absolute inset-0 z-20 bg-arena-alert/15" />
+      ) : null}
+
+      {fetchError ? (
+        <div className="relative z-40 mx-auto max-w-4xl px-6 pt-24 text-sm leading-relaxed text-arena-alert">
+          <p className="rounded border border-arena-alert/60 bg-black/80 p-4">
+            {fetchError}
+          </p>
+        </div>
       ) : null}
 
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-10 pb-10 pt-16">
