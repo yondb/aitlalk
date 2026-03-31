@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { waitUntil } from "@vercel/functions";
 import { generateDebateTurn } from "./deepseek";
 import { streamTtsToRoom } from "./elevenlabs";
 import { getPublicBaseUrl, getInternalSecret } from "./public-url";
@@ -8,7 +9,7 @@ import type { Side } from "./types";
 
 function betweenTurnMs(): number {
   const n = Number(process.env.DEBATE_BETWEEN_TURN_MS);
-  return Number.isFinite(n) && n >= 0 ? n : 3000;
+  return Number.isFinite(n) && n >= 0 ? n : 1500;
 }
 
 function speakerForTurnIndex(idx: number): Side {
@@ -31,8 +32,8 @@ export async function chainAfterDelay(roomId: string): Promise<void> {
 }
 
 /**
- * Runs one speaker turn (LLM + text events + TTS). Updates room state.
- * Caller should use waitUntil(chainAfterDelay) when result.scheduleNext is true.
+ * Runs one speaker turn (LLM + text events + TTS w tle).
+ * Odblokowuje UI zaraz po tekście — głos nie trzyma kolejnej tury.
  */
 export async function runTurn(roomId: string): Promise<{
   scheduleNext: boolean;
@@ -86,13 +87,25 @@ export async function runTurn(roomId: string): Promise<{
     }
 
     await trigger(roomId, "turn-end", { speaker });
-    await streamTtsToRoom({ roomId, speaker, text });
-  } finally {
-    const r = await getRoom(roomId);
-    if (r) {
-      r.generationLocked = false;
-      await saveRoom(r);
-    }
+  } catch (e) {
+    console.error("[debate] Pusher text events failed", e);
+  }
+
+  const rUnlock = await getRoom(roomId);
+  if (rUnlock) {
+    rUnlock.generationLocked = false;
+    await saveRoom(rUnlock);
+  }
+
+  const skipTts = process.env.SKIP_TTS === "1" || process.env.SKIP_TTS === "true";
+  const ttsJob = skipTts
+    ? trigger(roomId, "audio-end", { speaker })
+    : streamTtsToRoom({ roomId, speaker, text });
+
+  if (process.env.VERCEL) {
+    waitUntil(ttsJob);
+  } else {
+    void ttsJob.catch((e) => console.error("[debate] TTS", e));
   }
 
   const fresh = await getRoom(roomId);

@@ -2,8 +2,8 @@ import type { DebateMessage, Side } from "./types";
 
 const ENDPOINT = "https://api.deepseek.com/v1/chat/completions";
 
-const DEFAULT_MODEL = "deepseek-reasoner";
-const FALLBACK_MODEL = "deepseek-chat";
+/** domyślnie szybki chat — rozmowa; R1: ustaw DEEPSEEK_MODEL=deepseek-reasoner */
+const DEFAULT_MODEL = "deepseek-chat";
 
 export async function generateDebateTurn(params: {
   topic: string;
@@ -23,8 +23,9 @@ export async function generateDebateTurn(params: {
   const system = [
     `You are "${params.personaName}" in a formal debate.`,
     `Debate topic: ${params.topic}`,
-    `Follow your role and perspective. Be concise and persuasive (no monologues).`,
-    `Your persona and instructions: ${params.systemPrompt}`,
+    `Reply in a natural, spoken debate style. Be concise: about 3–6 sentences per turn unless the topic demands more.`,
+    `No long essays — this is a live back-and-forth.`,
+    `Your persona: ${params.systemPrompt}`,
     injection,
   ].join("\n");
 
@@ -34,7 +35,7 @@ export async function generateDebateTurn(params: {
 
   const userPrompt = params.transcript.length
     ? `Transcript so far:\n${transcriptBlock}\n\nYou are Side ${params.side}. Give your next contribution in character.`
-    : `The debate begins. You are Side ${params.side}. Deliver your opening statement on the topic.`;
+    : `The debate begins. You are Side ${params.side}. Deliver a short opening statement.`;
 
   const messages = [
     { role: "system" as const, content: system },
@@ -47,12 +48,12 @@ export async function generateDebateTurn(params: {
   try {
     return await callChat(apiKey, preferred, messages);
   } catch (e) {
-    if (preferred !== FALLBACK_MODEL) {
+    if (preferred === "deepseek-reasoner") {
       console.warn(
-        `[deepseek] ${preferred} failed, trying ${FALLBACK_MODEL}:`,
+        "[deepseek] reasoner failed, trying deepseek-chat:",
         e instanceof Error ? e.message : e
       );
-      return await callChat(apiKey, FALLBACK_MODEL, messages);
+      return await callChat(apiKey, "deepseek-chat", messages);
     }
     throw e;
   }
@@ -65,13 +66,13 @@ async function callChat(
 ): Promise<string> {
   const body = {
     model,
-    temperature: 1,
-    max_tokens: 300,
+    temperature: 0.85,
+    max_tokens: 220,
     messages,
   };
 
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 90_000);
+  const t = setTimeout(() => controller.abort(), 45_000);
 
   const res = await fetch(ENDPOINT, {
     method: "POST",
