@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { generateDebateTurn } from "./deepseek";
-import { streamTtsToRoom } from "./elevenlabs";
+import { scheduleTts } from "./tts";
 import { getPublicBaseUrl, getInternalSecret } from "./public-url";
 import { trigger } from "./pusher-server";
 import { getRoom, saveRoom } from "./store";
@@ -97,10 +97,7 @@ export async function runTurn(roomId: string): Promise<{
     await saveRoom(rUnlock);
   }
 
-  const skipTts = process.env.SKIP_TTS === "1" || process.env.SKIP_TTS === "true";
-  const ttsJob = skipTts
-    ? trigger(roomId, "audio-end", { speaker })
-    : streamTtsToRoom({ roomId, speaker, text });
+  const ttsJob = scheduleTts({ roomId, speaker, text });
 
   if (process.env.VERCEL) {
     waitUntil(ttsJob);
