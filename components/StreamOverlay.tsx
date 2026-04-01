@@ -115,6 +115,21 @@ export function StreamOverlay({ roomId }: { roomId: string }) {
     };
   }, [roomId]);
 
+  useEffect(() => {
+    if (!room) return;
+    if (room.debateStatus !== "between_turns") return;
+    if (room.generationLocked) return;
+
+    const id = window.setTimeout(() => {
+      fetch(absApi(`/api/debate/${encodeURIComponent(roomId)}/resume`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }).catch(() => {});
+    }, 900);
+
+    return () => window.clearTimeout(id);
+  }, [room, roomId, room?.debateStatus, room?.generationLocked]);
+
   const speakerName = useMemo(() => {
     if (!room || !speaker) return "—";
     return speaker === "A" ? room.sideA.name : room.sideB.name;

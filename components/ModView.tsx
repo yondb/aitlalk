@@ -144,6 +144,29 @@ export function ModView({
     };
   }, [roomId, mySide, refresh]);
 
+  useEffect(() => {
+    if (!room) return;
+    if (room.debateStatus !== "between_turns") return;
+    if (room.generationLocked) return;
+    if (room.currentTurnIndex >= room.totalTurns) return;
+
+    const id = window.setTimeout(() => {
+      fetch(absApi(`/api/debate/${encodeURIComponent(roomId)}/resume`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }).catch(() => {});
+    }, 900);
+
+    return () => window.clearTimeout(id);
+  }, [
+    room,
+    roomId,
+    room?.debateStatus,
+    room?.generationLocked,
+    room?.currentTurnIndex,
+    room?.totalTurns,
+  ]);
+
   const remaining = mySide === "A" ? room?.interventionsRemainingA : room?.interventionsRemainingB;
 
   const canIntervene =
