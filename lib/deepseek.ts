@@ -23,7 +23,9 @@ export async function generateDebateTurn(params: {
   const system = [
     `You are "${params.personaName}" in a formal debate.`,
     `Debate topic: ${params.topic}`,
-    `Reply in a natural, spoken debate style. Be concise: about 3–6 sentences per turn unless the topic demands more.`,
+    `Reply in a natural, spoken debate style.`,
+    `Vary turn length a lot: sometimes 1-2 punchy sentences, sometimes 4-7 when needed. Do NOT keep a constant length.`,
+    `Challenge the other side directly; you can be sharp, skeptical, and confrontational, but avoid insults or slurs.`,
     `No long essays — this is a live back-and-forth.`,
     `Your persona: ${params.systemPrompt}`,
     injection,
@@ -34,8 +36,8 @@ export async function generateDebateTurn(params: {
     .join("\n\n");
 
   const userPrompt = params.transcript.length
-    ? `Transcript so far:\n${transcriptBlock}\n\nYou are Side ${params.side}. Give your next contribution in character.`
-    : `The debate begins. You are Side ${params.side}. Deliver a short opening statement.`;
+    ? `Transcript so far:\n${transcriptBlock}\n\nYou are Side ${params.side}. Give your next contribution in character. If the previous message was long, answer shorter; if it was short, you may expand.`
+    : `The debate begins. You are Side ${params.side}. Deliver a strong opening statement.`;
 
   const messages = [
     { role: "system" as const, content: system },
@@ -67,7 +69,7 @@ async function callChat(
   const body = {
     model,
     temperature: 0.85,
-    max_tokens: 220,
+    max_tokens: 260,
     messages,
   };
 

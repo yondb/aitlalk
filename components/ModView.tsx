@@ -41,6 +41,7 @@ export function ModView({
   const [interveneOpen, setInterveneOpen] = useState(false);
   const [interveneText, setInterveneText] = useState("");
   const [intervening, setIntervening] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [stamp, setStamp] = useState(false);
   const [activeSpeaker, setActiveSpeaker] = useState<Side | null>(null);
 
@@ -243,6 +244,28 @@ export function ModView({
     }
   }
 
+  async function stopDebate() {
+    setStopping(true);
+    try {
+      const res = await fetch(
+        absApi(`/api/debate/${encodeURIComponent(roomId)}/stop`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error((j as { error?: string }).error || "Stop failed");
+      }
+      await refresh();
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Stop failed");
+    } finally {
+      setStopping(false);
+    }
+  }
+
   const fileNo = `XB-${roomId.toUpperCase()}`;
 
   return (
@@ -312,6 +335,17 @@ export function ModView({
               className="mt-4 w-full border border-arena-alert bg-black/40 px-3 py-2 text-xs uppercase tracking-widest text-arena-alert hover:bg-arena-alert/10 disabled:opacity-40"
             >
               {starting ? "Starting…" : "Start debate"}
+            </button>
+          ) : null}
+
+          {room?.debateStatus !== "ended" ? (
+            <button
+              type="button"
+              onClick={stopDebate}
+              disabled={stopping}
+              className="mt-2 w-full border border-arena-alert/70 bg-black/40 px-3 py-2 text-xs uppercase tracking-widest text-arena-alert hover:bg-arena-alert/10 disabled:opacity-40"
+            >
+              {stopping ? "Stopping…" : "Stop debate"}
             </button>
           ) : null}
 
