@@ -4,6 +4,7 @@ import { generateDebateTurn } from "./deepseek";
 import { scheduleTts } from "./tts";
 import { getPublicBaseUrl, getInternalSecret } from "./public-url";
 import { trigger } from "./pusher-server";
+import { emitStateSync } from "./state-sync";
 import { getRoom, saveRoom } from "./store";
 import type { Side } from "./types";
 
@@ -21,14 +22,29 @@ export async function chainAfterDelay(roomId: string): Promise<void> {
   if (delay > 0) await new Promise((r) => setTimeout(r, delay));
   const base = getPublicBaseUrl();
   const secret = getInternalSecret();
-  await fetch(`${base}/api/debate/${roomId}/step`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-internal-secret": secret,
-      "x-request-id": randomUUID(),
-    },
-  }).catch((e) => console.error("[debate] chain step failed", e));
+  try {
+    const res = await fetch(`${base}/api/debate/${roomId}/step`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": secret,
+        "x-request-id": randomUUID(),
+      },
+    });
+    if (res.ok) return;
+    const body = await res.text().catch(() => "");
+    console.error("[debate] chain step bad status", res.status, body);
+  } catch (e) {
+    console.error("[debate] chain step failed", e);
+  }
+
+  // Fallback: if internal HTTP chaining is blocked (e.g. auth/proxy),
+  // continue turns directly so the debate does not freeze.
+  const { scheduleNext } = await runTurn(roomId);
+  await emitStateSync(roomId);
+  if (scheduleNext) {
+    waitUntil(chainAfterDelay(roomId));
+  }
 }
 
 /**
