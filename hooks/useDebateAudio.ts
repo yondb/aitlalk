@@ -5,6 +5,12 @@ import { useEffect } from "react";
 
 type Side = "A" | "B";
 
+/** 0.5–2.0 w Web Speech API; domyślnie trochę szybciej niż system */
+const BROWSER_TTS_RATE = (() => {
+  const n = Number(process.env.NEXT_PUBLIC_TTS_RATE);
+  return Number.isFinite(n) && n >= 0.5 && n <= 2 ? n : 1.2;
+})();
+
 function pickVoice(speaker: Side): SpeechSynthesisVoice | null {
   const list = typeof window !== "undefined" ? window.speechSynthesis.getVoices() : [];
   const pl = list.filter((v) => v.lang.toLowerCase().startsWith("pl"));
@@ -24,7 +30,7 @@ function speakInBrowserQueued(speaker: Side, text: string): Promise<void> {
     const v = pickVoice(speaker);
     if (v) u.voice = v;
     u.pitch = speaker === "A" ? 1.05 : 0.92;
-    u.rate = 1.02;
+    u.rate = BROWSER_TTS_RATE;
     u.onend = () => resolve();
     u.onerror = () => resolve();
     window.speechSynthesis.speak(u);
@@ -62,27 +68,19 @@ export function useDebateAudio(roomId: string | undefined) {
     let chain = Promise.resolve();
     let activeAudio: HTMLAudioElement | null = null;
 
+    const enqueue = (fn: () => Promise<void>) => {
+      chain = chain.then(fn).catch(() => {});
+    };
+
     const onChunk = (data: { seq: number; data: string }) => {
       acc[data.seq] = decodeChunk(data.data);
     };
 
     const onBrowserTts = (data: { speaker: Side; text: string }) => {
       const run = () => {
-        chain = chain
-          .then(async () => {
-            // Ensure we don't overlap with mp3 playback
-            if (activeAudio) {
-              try {
-                activeAudio.pause();
-                activeAudio.currentTime = 0;
-              } catch {}
-              activeAudio = null;
-            }
-            // Cancel any previous utterances and enqueue this one
-            window.speechSynthesis.cancel();
-            await speakInBrowserQueued(data.speaker, data.text);
-          })
-          .catch(() => {});
+        enqueue(async () => {
+          await speakInBrowserQueued(data.speaker, data.text);
+        });
       };
       if (window.speechSynthesis.getVoices().length) {
         run();
@@ -103,35 +101,21 @@ export function useDebateAudio(roomId: string | undefined) {
       const blob = new Blob([merged as BlobPart], { type: "audio/mpeg" });
       const url = URL.createObjectURL(blob);
 
-      chain = chain
-        .then(
-          () =>
-            new Promise<void>((resolve) => {
-              // Ensure we don't overlap with browser speech
-              window.speechSynthesis.cancel();
+      enqueue(async () => {
+        await new Promise<void>((resolve) => {
+          const audio = new Audio(url);
+          activeAudio = audio;
 
-              if (activeAudio) {
-                try {
-                  activeAudio.pause();
-                  activeAudio.currentTime = 0;
-                } catch {}
-              }
-              const audio = new Audio(url);
-              activeAudio = audio;
-
-              const done = () => {
-                if (activeAudio === audio) activeAudio = null;
-                URL.revokeObjectURL(url);
-                resolve();
-              };
-              audio.addEventListener("ended", done, { once: true });
-              audio.addEventListener("error", done, { once: true });
-              audio.play().catch(done);
-            })
-        )
-        .catch(() => {
-          URL.revokeObjectURL(url);
+          const done = () => {
+            if (activeAudio === audio) activeAudio = null;
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          audio.addEventListener("ended", done, { once: true });
+          audio.addEventListener("error", done, { once: true });
+          audio.play().catch(done);
         });
+      });
     };
 
     channel.bind("audio-chunk", onChunk);
