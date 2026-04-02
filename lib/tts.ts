@@ -19,6 +19,13 @@ export function resolveTtsProvider(): "elevenlabs" | "browser" | "none" {
   return process.env.ELEVENLABS_API_KEY ? "elevenlabs" : "browser";
 }
 
+function allowElevenlabsFallbackToBrowser(): boolean {
+  const p = (process.env.TTS_PROVIDER || "").toLowerCase().trim();
+  // If user explicitly forces ElevenLabs, don't silently fall back.
+  if (p === "elevenlabs") return false;
+  return true;
+}
+
 export async function scheduleTts(params: {
   roomId: string;
   speaker: Side;
@@ -37,5 +44,12 @@ export async function scheduleTts(params: {
     await trigger(params.roomId, "audio-end", { speaker: params.speaker });
     return;
   }
-  await streamTtsToRoom(params);
+  const ok = await streamTtsToRoom(params);
+  if (!ok && allowElevenlabsFallbackToBrowser()) {
+    await trigger(params.roomId, "browser-tts", {
+      speaker: params.speaker,
+      text: params.text,
+    });
+    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+  }
 }

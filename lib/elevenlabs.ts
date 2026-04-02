@@ -16,12 +16,12 @@ export async function streamTtsToRoom(params: {
   roomId: string;
   speaker: Side;
   text: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const voiceId = voiceFor(params.speaker);
   if (!apiKey || !voiceId) {
     await trigger(params.roomId, "audio-end", { speaker: params.speaker });
-    return;
+    return false;
   }
 
   const url = `${BASE}/v1/text-to-speech/${encodeURIComponent(
@@ -44,13 +44,13 @@ export async function streamTtsToRoom(params: {
   } catch (e) {
     console.error("[elevenlabs] fetch failed", e);
     await trigger(params.roomId, "audio-end", { speaker: params.speaker });
-    return;
+    return false;
   }
 
   if (!res.ok || !res.body) {
     console.error("[elevenlabs] bad response", res.status, await res.text());
     await trigger(params.roomId, "audio-end", { speaker: params.speaker });
-    return;
+    return false;
   }
 
   const reader = res.body.getReader();
@@ -78,4 +78,5 @@ export async function streamTtsToRoom(params: {
   }
 
   await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+  return true;
 }
