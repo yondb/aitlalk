@@ -16,11 +16,15 @@ export async function streamTtsToRoom(params: {
   roomId: string;
   speaker: Side;
   text: string;
+  turnIndex: number;
 }): Promise<boolean> {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const voiceId = voiceFor(params.speaker);
   if (!apiKey || !voiceId) {
-    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+    await trigger(params.roomId, "audio-end", {
+      speaker: params.speaker,
+      turnIndex: params.turnIndex,
+    });
     return false;
   }
 
@@ -43,13 +47,19 @@ export async function streamTtsToRoom(params: {
     });
   } catch (e) {
     console.error("[elevenlabs] fetch failed", e);
-    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+    await trigger(params.roomId, "audio-end", {
+      speaker: params.speaker,
+      turnIndex: params.turnIndex,
+    });
     return false;
   }
 
   if (!res.ok || !res.body) {
     console.error("[elevenlabs] bad response", res.status, await res.text());
-    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+    await trigger(params.roomId, "audio-end", {
+      speaker: params.speaker,
+      turnIndex: params.turnIndex,
+    });
     return false;
   }
 
@@ -67,6 +77,7 @@ export async function streamTtsToRoom(params: {
         const data = Buffer.from(slice).toString("base64");
         await trigger(params.roomId, "audio-chunk", {
           speaker: params.speaker,
+          turnIndex: params.turnIndex,
           seq,
           data,
         });
@@ -77,6 +88,9 @@ export async function streamTtsToRoom(params: {
     console.error("[elevenlabs] stream read error", e);
   }
 
-  await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+  await trigger(params.roomId, "audio-end", {
+    speaker: params.speaker,
+    turnIndex: params.turnIndex,
+  });
   return true;
 }

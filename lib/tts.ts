@@ -30,18 +30,26 @@ export async function scheduleTts(params: {
   roomId: string;
   speaker: Side;
   text: string;
+  turnIndex: number;
 }): Promise<void> {
   const mode = resolveTtsProvider();
   if (mode === "none") {
-    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+    await trigger(params.roomId, "audio-end", {
+      speaker: params.speaker,
+      turnIndex: params.turnIndex,
+    });
     return;
   }
   if (mode === "browser") {
     await trigger(params.roomId, "browser-tts", {
       speaker: params.speaker,
       text: params.text,
+      turnIndex: params.turnIndex,
     });
-    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+    await trigger(params.roomId, "audio-end", {
+      speaker: params.speaker,
+      turnIndex: params.turnIndex,
+    });
     return;
   }
   const ok = await streamTtsToRoom(params);
@@ -49,7 +57,11 @@ export async function scheduleTts(params: {
     await trigger(params.roomId, "browser-tts", {
       speaker: params.speaker,
       text: params.text,
+      turnIndex: params.turnIndex,
     });
-    await trigger(params.roomId, "audio-end", { speaker: params.speaker });
+    await trigger(params.roomId, "audio-end", {
+      speaker: params.speaker,
+      turnIndex: params.turnIndex,
+    });
   }
 }

@@ -1,11 +1,12 @@
 "use client";
 
 import Pusher from "pusher-js";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { absApi } from "@/lib/client-api";
 
 type Side = "A" | "B";
 
-/** 0.5–2.0 w Web Speech API; domyślnie trochę szybciej niż system */
+/** 0.5–2.0 w Web Speech API */
 const BROWSER_TTS_RATE = (() => {
   const n = Number(process.env.NEXT_PUBLIC_TTS_RATE);
   return Number.isFinite(n) && n >= 0.5 && n <= 2 ? n : 1.2;
@@ -55,16 +56,53 @@ function mergeChunks(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+type TLine = { side: Side; content: string };
+
+async function fetchTranscript(roomId: string): Promise<TLine[]> {
+  const r = await fetch(absApi(`/api/rooms/${encodeURIComponent(roomId)}?m=n`), {
+    headers: { "X-Aitalk-View": "none" },
+    cache: "no-store",
+  });
+  if (!r.ok) return [];
+  const d = (await r.json()) as { transcript?: TLine[] };
+  return Array.isArray(d.transcript) ? d.transcript : [];
+}
+
+function ensureVoicesReady(): Promise<void> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    if (window.speechSynthesis.getVoices().length > 0) {
+      resolve();
+      return;
+    }
+    const onVoices = () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", onVoices);
+      resolve();
+    };
+    window.speechSynthesis.addEventListener("voiceschanged", onVoices);
+    window.setTimeout(() => {
+      window.speechSynthesis.removeEventListener("voiceschanged", onVoices);
+      resolve();
+    }, 1500);
+  });
+}
+
 export function useDebateAudio(roomId: string | undefined) {
+  const lastPlayedTurnRef = useRef(-1);
+
   useEffect(() => {
     if (!roomId) return;
+    const rid = roomId;
     const key = process.env.NEXT_PUBLIC_PUSHER_KEY;
     const cluster = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
     if (!key || !cluster) return;
 
     const pusher = new Pusher(key, { cluster });
-    const channel = pusher.subscribe(`debate-${roomId}`);
+    const channel = pusher.subscribe(`debate-${rid}`);
     const acc: Uint8Array[] = [];
+    let accTurn: number | null = null;
     let chain = Promise.resolve();
     let activeAudio: HTMLAudioElement | null = null;
 
@@ -72,43 +110,52 @@ export function useDebateAudio(roomId: string | undefined) {
       chain = chain.then(fn).catch(() => {});
     };
 
-    const onChunk = (data: { seq: number; data: string }) => {
+    async function speakGapIfNeeded(beforeTurnIndex: number) {
+      const last = lastPlayedTurnRef.current;
+      if (beforeTurnIndex <= last + 1) return;
+      const lines = await fetchTranscript(rid);
+      for (let i = last + 1; i < beforeTurnIndex; i++) {
+        const line = lines[i];
+        if (line) await speakInBrowserQueued(line.side, line.content);
+      }
+      lastPlayedTurnRef.current = beforeTurnIndex - 1;
+    }
+
+    const onChunk = (data: {
+      seq: number;
+      data: string;
+      turnIndex?: number;
+    }) => {
+      const ti = data.turnIndex ?? accTurn ?? 0;
+      if (accTurn !== null && ti !== accTurn) {
+        acc.length = 0;
+      }
+      accTurn = ti;
       acc[data.seq] = decodeChunk(data.data);
     };
 
-    const onBrowserTts = (data: { speaker: Side; text: string }) => {
-      const run = () => {
-        enqueue(async () => {
-          await speakInBrowserQueued(data.speaker, data.text);
-        });
-      };
-      if (window.speechSynthesis.getVoices().length) {
-        run();
-        return;
-      }
-      const once = () => {
-        window.speechSynthesis.removeEventListener("voiceschanged", once);
-        run();
-      };
-      window.speechSynthesis.addEventListener("voiceschanged", once);
-    };
-
-    const onEnd = () => {
+    const onEnd = (data: { speaker: Side; turnIndex?: number }) => {
+      const turnIndex = data.turnIndex ?? accTurn ?? 0;
       const ordered = acc.filter((x): x is Uint8Array => Boolean(x));
       acc.length = 0;
+      accTurn = null;
+
       if (!ordered.length) return;
+
       const merged = mergeChunks(ordered);
       const blob = new Blob([merged as BlobPart], { type: "audio/mpeg" });
       const url = URL.createObjectURL(blob);
 
       enqueue(async () => {
+        await ensureVoicesReady();
+        await speakGapIfNeeded(turnIndex);
         await new Promise<void>((resolve) => {
           const audio = new Audio(url);
           activeAudio = audio;
-
           const done = () => {
             if (activeAudio === audio) activeAudio = null;
             URL.revokeObjectURL(url);
+            lastPlayedTurnRef.current = turnIndex;
             resolve();
           };
           audio.addEventListener("ended", done, { once: true });
@@ -118,11 +165,36 @@ export function useDebateAudio(roomId: string | undefined) {
       });
     };
 
+    const onBrowserTts = (data: {
+      speaker: Side;
+      text: string;
+      turnIndex?: number;
+    }) => {
+      const turnIndex = data.turnIndex ?? lastPlayedTurnRef.current + 1;
+      enqueue(async () => {
+        await ensureVoicesReady();
+        await speakGapIfNeeded(turnIndex);
+        await speakInBrowserQueued(data.speaker, data.text);
+        lastPlayedTurnRef.current = turnIndex;
+      });
+    };
+
+    const unlockOnce = () => {
+      try {
+        const a = new Audio();
+        a.play().catch(() => {});
+      } catch {}
+    };
+    document.addEventListener("click", unlockOnce, { once: true });
+    document.addEventListener("keydown", unlockOnce, { once: true });
+
     channel.bind("audio-chunk", onChunk);
     channel.bind("audio-end", onEnd);
     channel.bind("browser-tts", onBrowserTts);
 
     return () => {
+      document.removeEventListener("click", unlockOnce);
+      document.removeEventListener("keydown", unlockOnce);
       channel.unbind("audio-chunk", onChunk);
       channel.unbind("audio-end", onEnd);
       channel.unbind("browser-tts", onBrowserTts);
@@ -136,7 +208,8 @@ export function useDebateAudio(roomId: string | undefined) {
         } catch {}
         activeAudio = null;
       }
-      pusher.unsubscribe(`debate-${roomId}`);
+      lastPlayedTurnRef.current = -1;
+      pusher.unsubscribe(`debate-${rid}`);
       pusher.disconnect();
     };
   }, [roomId]);

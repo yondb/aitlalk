@@ -64,7 +64,8 @@ export async function runTurn(roomId: string): Promise<{
   room.generationLocked = true;
   await saveRoom(room);
 
-  const speaker = speakerForTurnIndex(room.currentTurnIndex);
+  const thisTurnIndex = room.currentTurnIndex;
+  const speaker = speakerForTurnIndex(thisTurnIndex);
   const injection =
     speaker === "A" ? room.pendingInterventionA : room.pendingInterventionB;
   if (speaker === "A") delete room.pendingInterventionA;
@@ -113,14 +114,7 @@ export async function runTurn(roomId: string): Promise<{
     await saveRoom(rUnlock);
   }
 
-  const ttsJob = scheduleTts({ roomId, speaker, text });
-
-  if (process.env.VERCEL) {
-    waitUntil(ttsJob);
-  } else {
-    void ttsJob.catch((e) => console.error("[debate] TTS", e));
-  }
-
+  // Zapis transkryptu przed TTS — klient może od razu pobrać pełną listę przy uzupełnianiu luk audio.
   const fresh = await getRoom(roomId);
   if (!fresh) return { scheduleNext: false };
 
@@ -130,14 +124,22 @@ export async function runTurn(roomId: string): Promise<{
   ];
   fresh.currentTurnIndex += 1;
 
-  if (fresh.currentTurnIndex >= fresh.totalTurns) {
-    fresh.debateStatus = "ended";
-    await saveRoom(fresh);
+  const ended = fresh.currentTurnIndex >= fresh.totalTurns;
+  fresh.debateStatus = ended ? "ended" : "between_turns";
+  await saveRoom(fresh);
+
+  const ttsJob = scheduleTts({ roomId, speaker, text, turnIndex: thisTurnIndex });
+
+  if (process.env.VERCEL) {
+    waitUntil(ttsJob);
+  } else {
+    void ttsJob.catch((e) => console.error("[debate] TTS", e));
+  }
+
+  if (ended) {
     await trigger(roomId, "debate-ended", {});
     return { scheduleNext: false };
   }
 
-  fresh.debateStatus = "between_turns";
-  await saveRoom(fresh);
   return { scheduleNext: true };
 }
