@@ -14,15 +14,21 @@ function pickVoice(speaker: Side): SpeechSynthesisVoice | null {
   return pool[0] ?? null;
 }
 
-function speakInBrowser(speaker: Side, text: string) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  const v = pickVoice(speaker);
-  if (v) u.voice = v;
-  u.pitch = speaker === "A" ? 1.05 : 0.92;
-  u.rate = 1.02;
-  window.speechSynthesis.speak(u);
+function speakInBrowserQueued(speaker: Side, text: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      resolve();
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pickVoice(speaker);
+    if (v) u.voice = v;
+    u.pitch = speaker === "A" ? 1.05 : 0.92;
+    u.rate = 1.02;
+    u.onend = () => resolve();
+    u.onerror = () => resolve();
+    window.speechSynthesis.speak(u);
+  });
 }
 
 function decodeChunk(b64: string): Uint8Array {
@@ -53,13 +59,31 @@ export function useDebateAudio(roomId: string | undefined) {
     const pusher = new Pusher(key, { cluster });
     const channel = pusher.subscribe(`debate-${roomId}`);
     const acc: Uint8Array[] = [];
+    let chain = Promise.resolve();
+    let activeAudio: HTMLAudioElement | null = null;
 
     const onChunk = (data: { seq: number; data: string }) => {
       acc[data.seq] = decodeChunk(data.data);
     };
 
     const onBrowserTts = (data: { speaker: Side; text: string }) => {
-      const run = () => speakInBrowser(data.speaker, data.text);
+      const run = () => {
+        chain = chain
+          .then(async () => {
+            // Ensure we don't overlap with mp3 playback
+            if (activeAudio) {
+              try {
+                activeAudio.pause();
+                activeAudio.currentTime = 0;
+              } catch {}
+              activeAudio = null;
+            }
+            // Cancel any previous utterances and enqueue this one
+            window.speechSynthesis.cancel();
+            await speakInBrowserQueued(data.speaker, data.text);
+          })
+          .catch(() => {});
+      };
       if (window.speechSynthesis.getVoices().length) {
         run();
         return;
@@ -78,11 +102,36 @@ export function useDebateAudio(roomId: string | undefined) {
       const merged = mergeChunks(ordered);
       const blob = new Blob([merged as BlobPart], { type: "audio/mpeg" });
       const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.play().catch(() => {});
-      audio.addEventListener("ended", () => URL.revokeObjectURL(url), {
-        once: true,
-      });
+
+      chain = chain
+        .then(
+          () =>
+            new Promise<void>((resolve) => {
+              // Ensure we don't overlap with browser speech
+              window.speechSynthesis.cancel();
+
+              if (activeAudio) {
+                try {
+                  activeAudio.pause();
+                  activeAudio.currentTime = 0;
+                } catch {}
+              }
+              const audio = new Audio(url);
+              activeAudio = audio;
+
+              const done = () => {
+                if (activeAudio === audio) activeAudio = null;
+                URL.revokeObjectURL(url);
+                resolve();
+              };
+              audio.addEventListener("ended", done, { once: true });
+              audio.addEventListener("error", done, { once: true });
+              audio.play().catch(done);
+            })
+        )
+        .catch(() => {
+          URL.revokeObjectURL(url);
+        });
     };
 
     channel.bind("audio-chunk", onChunk);
@@ -93,6 +142,16 @@ export function useDebateAudio(roomId: string | undefined) {
       channel.unbind("audio-chunk", onChunk);
       channel.unbind("audio-end", onEnd);
       channel.unbind("browser-tts", onBrowserTts);
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+      if (activeAudio) {
+        try {
+          activeAudio.pause();
+          activeAudio.currentTime = 0;
+        } catch {}
+        activeAudio = null;
+      }
       pusher.unsubscribe(`debate-${roomId}`);
       pusher.disconnect();
     };
