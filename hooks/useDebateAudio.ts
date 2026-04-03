@@ -41,7 +41,7 @@ export function useDebateAudio(roomId: string | undefined) {
 
     const pusher = new Pusher(key, { cluster });
     const channel = pusher.subscribe(`debate-${rid}`);
-    const acc: Uint8Array[] = [];
+    const acc = new Map<number, Uint8Array>();
     let accTurn: number | null = null;
     let chain = Promise.resolve();
     let activeAudio: HTMLAudioElement | null = null;
@@ -57,16 +57,17 @@ export function useDebateAudio(roomId: string | undefined) {
     }) => {
       const ti = data.turnIndex ?? accTurn ?? 0;
       if (accTurn !== null && ti !== accTurn) {
-        acc.length = 0;
+        acc.clear();
       }
       accTurn = ti;
-      acc[data.seq] = decodeChunk(data.data);
+      acc.set(data.seq, decodeChunk(data.data));
     };
 
     const onEnd = (data: { turnIndex?: number }) => {
       const turnIndex = data.turnIndex ?? accTurn ?? 0;
-      const ordered = acc.filter((x): x is Uint8Array => Boolean(x));
-      acc.length = 0;
+      const seqs = Array.from(acc.keys()).sort((a, b) => a - b);
+      const ordered = seqs.map((s) => acc.get(s)).filter((x): x is Uint8Array => Boolean(x));
+      acc.clear();
       accTurn = null;
 
       if (!ordered.length) return;
@@ -86,7 +87,10 @@ export function useDebateAudio(roomId: string | undefined) {
             resolve();
           };
           audio.addEventListener("ended", done, { once: true });
-          audio.addEventListener("error", done, { once: true });
+          audio.addEventListener("error", () => {
+            console.warn("[audio] mp3 playback error");
+            done();
+          }, { once: true });
           audio.play().catch(done);
         });
       });

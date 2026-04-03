@@ -128,12 +128,10 @@ export async function runTurn(roomId: string): Promise<{
   fresh.debateStatus = ended ? "ended" : "between_turns";
   await saveRoom(fresh);
 
-  const ttsJob = scheduleTts({ roomId, speaker, text, turnIndex: thisTurnIndex });
-
-  if (process.env.VERCEL) {
-    waitUntil(ttsJob);
-  } else {
-    void ttsJob.catch((e) => console.error("[debate] TTS", e));
+  try {
+    await scheduleTts({ roomId, speaker, text, turnIndex: thisTurnIndex });
+  } catch (e) {
+    console.error("[debate] TTS failed", e);
   }
 
   if (ended) {
