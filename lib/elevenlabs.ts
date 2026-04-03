@@ -8,7 +8,41 @@ function voiceFor(side: Side): string | null {
     side === "A"
       ? process.env.ELEVENLABS_VOICE_A
       : process.env.ELEVENLABS_VOICE_B;
-  return id || null;
+  return id?.trim() || null;
+}
+
+function numEnv(name: string): number | undefined {
+  const v = process.env[name]?.trim();
+  if (v === undefined || v === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Body zgodny z API v1 text-to-speech stream (model + opcjonalne voice_settings). */
+function ttsRequestBody(text: string): Record<string, unknown> {
+  const model =
+    process.env.ELEVENLABS_MODEL_ID?.trim() || "eleven_flash_v2_5";
+  const body: Record<string, unknown> = {
+    text,
+    model_id: model,
+  };
+  const stability = numEnv("ELEVENLABS_STABILITY");
+  const similarity = numEnv("ELEVENLABS_SIMILARITY_BOOST");
+  const style = numEnv("ELEVENLABS_STYLE");
+  const speed = numEnv("ELEVENLABS_SPEED");
+  const useSpeakerBoost = process.env.ELEVENLABS_USE_SPEAKER_BOOST;
+  const vs: Record<string, number | boolean> = {};
+  if (stability !== undefined) vs.stability = stability;
+  if (similarity !== undefined) vs.similarity_boost = similarity;
+  if (style !== undefined) vs.style = style;
+  if (speed !== undefined) vs.speed = speed;
+  if (useSpeakerBoost === "1" || useSpeakerBoost === "true") {
+    vs.use_speaker_boost = true;
+  }
+  if (Object.keys(vs).length > 0) {
+    body.voice_settings = vs;
+  }
+  return body;
 }
 
 /** Streams TTS from ElevenLabs and forwards chunks over Pusher. Returns on success or logs and returns on failure. */
@@ -18,7 +52,7 @@ export async function streamTtsToRoom(params: {
   text: string;
   turnIndex: number;
 }): Promise<boolean> {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
   const voiceId = voiceFor(params.speaker);
   if (!apiKey || !voiceId) {
     await trigger(params.roomId, "audio-end", {
@@ -40,10 +74,7 @@ export async function streamTtsToRoom(params: {
         "Content-Type": "application/json",
         "xi-api-key": apiKey,
       },
-      body: JSON.stringify({
-        text: params.text,
-        model_id: "eleven_flash_v2_5",
-      }),
+      body: JSON.stringify(ttsRequestBody(params.text)),
     });
   } catch (e) {
     console.error("[elevenlabs] fetch failed", e);

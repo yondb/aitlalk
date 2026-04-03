@@ -3,9 +3,12 @@ import { trigger } from "./pusher-server";
 import type { Side } from "./types";
 
 /**
- * elevenlabs — API ElevenLabs (płatne / wymaga klucza)
- * browser — Web Speech API w przeglądarce (darmowe, jakość zależy od OS)
- * none — brak mowy (tylko tekst)
+ * elevenlabs — tylko API ElevenLabs (MP3 w kliencie)
+ * none — brak mowy (tekst na ekranie)
+ * browser — wyłącznie gdy jawnie TTS_PROVIDER=browser (Web Speech, dev/test)
+ *
+ * Domyślnie: ElevenLabs przy ELEVENLABS_API_KEY, inaczej none (NIE przeglądarka).
+ * Brak cichego fallbacku z ElevenLabs na Web Speech.
  */
 export function resolveTtsProvider(): "elevenlabs" | "browser" | "none" {
   if (process.env.SKIP_TTS === "1" || process.env.SKIP_TTS === "true") {
@@ -15,15 +18,7 @@ export function resolveTtsProvider(): "elevenlabs" | "browser" | "none" {
   if (p === "none" || p === "off") return "none";
   if (p === "browser" || p === "web") return "browser";
   if (p === "elevenlabs") return "elevenlabs";
-  // Domyślnie: ElevenLabs tylko przy ustawionym kluczu, inaczej darmowy głos w przeglądarce
-  return process.env.ELEVENLABS_API_KEY ? "elevenlabs" : "browser";
-}
-
-function allowElevenlabsFallbackToBrowser(): boolean {
-  const p = (process.env.TTS_PROVIDER || "").toLowerCase().trim();
-  // If user explicitly forces ElevenLabs, don't silently fall back.
-  if (p === "elevenlabs") return false;
-  return true;
+  return process.env.ELEVENLABS_API_KEY?.trim() ? "elevenlabs" : "none";
 }
 
 export async function scheduleTts(params: {
@@ -52,16 +47,5 @@ export async function scheduleTts(params: {
     });
     return;
   }
-  const ok = await streamTtsToRoom(params);
-  if (!ok && allowElevenlabsFallbackToBrowser()) {
-    await trigger(params.roomId, "browser-tts", {
-      speaker: params.speaker,
-      text: params.text,
-      turnIndex: params.turnIndex,
-    });
-    await trigger(params.roomId, "audio-end", {
-      speaker: params.speaker,
-      turnIndex: params.turnIndex,
-    });
-  }
+  await streamTtsToRoom(params);
 }
