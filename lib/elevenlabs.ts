@@ -3,6 +3,9 @@ import { trigger } from "./pusher-server";
 
 const BASE = "https://api.elevenlabs.io";
 
+/** ~7 KB base64 + ramka JSON — poniżej limitu ~10 KB Pusher na event. */
+const PUSHER_MP3_CHUNK = 5000;
+
 function voiceFor(side: Side): string | null {
   const id =
     side === "A"
@@ -45,6 +48,96 @@ function ttsRequestBody(text: string): Record<string, unknown> {
   return body;
 }
 
+async function elevenLabsStreamResponse(
+  speaker: Side,
+  text: string
+): Promise<Response | null> {
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const voiceId = voiceFor(speaker);
+  if (!apiKey || !voiceId) return null;
+
+  const url = `${BASE}/v1/text-to-speech/${encodeURIComponent(
+    voiceId
+  )}/stream?output_format=mp3_44100_128`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "xi-api-key": apiKey,
+      },
+      body: JSON.stringify(ttsRequestBody(text)),
+    });
+    return res;
+  } catch (e) {
+    console.error("[elevenlabs] fetch failed", e);
+    return null;
+  }
+}
+
+/** Cały MP3 w pamięci (prefetch / bufor). */
+export async function fetchElevenLabsMp3Buffer(
+  speaker: Side,
+  text: string
+): Promise<Uint8Array | null> {
+  const res = await elevenLabsStreamResponse(speaker, text);
+  if (!res) return null;
+  if (!res.ok || !res.body) {
+    console.error("[elevenlabs] bad response", res.status, await res.text());
+    return null;
+  }
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.length) parts.push(value);
+    }
+  } catch (e) {
+    console.error("[elevenlabs] buffer read error", e);
+    return null;
+  }
+  if (!parts.length) return null;
+  const len = parts.reduce((a, b) => a + b.length, 0);
+  const out = new Uint8Array(len);
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+
+/** Wysyła gotowy MP3 do Pushera (te same eventy co stream na żywo). */
+export async function streamMp3BufferToRoom(params: {
+  roomId: string;
+  speaker: Side;
+  turnIndex: number;
+  buffer: Uint8Array;
+}): Promise<void> {
+  const { roomId, speaker, turnIndex, buffer } = params;
+  let seq = 0;
+  const chunkSize = PUSHER_MP3_CHUNK;
+  try {
+    for (let i = 0; i < buffer.length; i += chunkSize) {
+      const slice = buffer.subarray(i, i + chunkSize);
+      const data = Buffer.from(slice).toString("base64");
+      await trigger(roomId, "audio-chunk", {
+        speaker,
+        turnIndex,
+        seq,
+        data,
+      });
+      seq += 1;
+    }
+  } catch (e) {
+    console.error("[elevenlabs] push buffer error", e);
+  }
+  await trigger(roomId, "audio-end", { speaker, turnIndex });
+}
+
 /** Streams TTS from ElevenLabs and forwards chunks over Pusher. Returns on success or logs and returns on failure. */
 export async function streamTtsToRoom(params: {
   roomId: string;
@@ -52,32 +145,8 @@ export async function streamTtsToRoom(params: {
   text: string;
   turnIndex: number;
 }): Promise<boolean> {
-  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
-  const voiceId = voiceFor(params.speaker);
-  if (!apiKey || !voiceId) {
-    await trigger(params.roomId, "audio-end", {
-      speaker: params.speaker,
-      turnIndex: params.turnIndex,
-    });
-    return false;
-  }
-
-  const url = `${BASE}/v1/text-to-speech/${encodeURIComponent(
-    voiceId
-  )}/stream?output_format=mp3_44100_128`;
-
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "xi-api-key": apiKey,
-      },
-      body: JSON.stringify(ttsRequestBody(params.text)),
-    });
-  } catch (e) {
-    console.error("[elevenlabs] fetch failed", e);
+  const res = await elevenLabsStreamResponse(params.speaker, params.text);
+  if (!res) {
     await trigger(params.roomId, "audio-end", {
       speaker: params.speaker,
       turnIndex: params.turnIndex,
@@ -96,7 +165,7 @@ export async function streamTtsToRoom(params: {
 
   const reader = res.body.getReader();
   let seq = 0;
-  const chunkSize = 1500;
+  const chunkSize = PUSHER_MP3_CHUNK;
 
   try {
     while (true) {

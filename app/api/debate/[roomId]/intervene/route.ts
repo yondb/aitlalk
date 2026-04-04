@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { trigger } from "@/lib/pusher-server";
 import { emitStateSync } from "@/lib/state-sync";
+import { clearPrefetch } from "@/lib/prefetch-store";
 import { getRoom, saveRoom } from "@/lib/store";
 import type { Side } from "@/lib/types";
 
@@ -45,6 +46,7 @@ export async function POST(
   }
 
   await saveRoom(room);
+  await clearPrefetch(roomId);
 
   await trigger(roomId, "intervention-used", {
     side,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { trigger } from "@/lib/pusher-server";
 import { emitStateSync } from "@/lib/state-sync";
+import { clearPrefetch } from "@/lib/prefetch-store";
 import { getRoom, saveRoom } from "@/lib/store";
 
 export async function POST(
@@ -20,6 +21,7 @@ export async function POST(
   delete room.pendingInterventionA;
   delete room.pendingInterventionB;
   await saveRoom(room);
+  await clearPrefetch(roomId);
 
   await emitStateSync(roomId);
   await trigger(roomId, "debate-ended", { forced: true });

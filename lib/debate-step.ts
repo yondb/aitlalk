@@ -1,8 +1,11 @@
 import { randomUUID } from "crypto";
 import { waitUntil } from "@vercel/functions";
+import { streamMp3BufferToRoom } from "./elevenlabs";
 import { generateDebateTurn } from "./deepseek";
-import { scheduleTts } from "./tts";
+import { prefetchEnabled, runPrefetchNextTurn } from "./prefetch-turn";
+import { clearPrefetch, getPrefetch } from "./prefetch-store";
 import { getPublicBaseUrl, getInternalSecret } from "./public-url";
+import { scheduleTts, resolveTtsProvider } from "./tts";
 import { trigger } from "./pusher-server";
 import { emitStateSync } from "./state-sync";
 import { getRoom, saveRoom } from "./store";
@@ -38,8 +41,6 @@ export async function chainAfterDelay(roomId: string): Promise<void> {
     console.error("[debate] chain step failed", e);
   }
 
-  // Fallback: if internal HTTP chaining is blocked (e.g. auth/proxy),
-  // continue turns directly so the debate does not freeze.
   const { scheduleNext } = await runTurn(roomId);
   await emitStateSync(roomId);
   if (scheduleNext) {
@@ -48,8 +49,8 @@ export async function chainAfterDelay(roomId: string): Promise<void> {
 }
 
 /**
- * Runs one speaker turn (LLM + text events + TTS w tle).
- * Odblokowuje UI zaraz po tekście — głos nie trzyma kolejnej tury.
+ * Runs one speaker turn (LLM + text events + TTS).
+ * Opcjonalnie zużywa prefetch (LLM+MP3 następnej tury przygotowane w tle).
  */
 export async function runTurn(roomId: string): Promise<{
   scheduleNext: boolean;
@@ -68,37 +69,59 @@ export async function runTurn(roomId: string): Promise<{
   const speaker = speakerForTurnIndex(thisTurnIndex);
   const injection =
     speaker === "A" ? room.pendingInterventionA : room.pendingInterventionB;
+
+  const pre = await getPrefetch(roomId);
+  const usePrefetchBuffer =
+    prefetchEnabled() &&
+    resolveTtsProvider() === "elevenlabs" &&
+    pre?.turnIndex === thisTurnIndex &&
+    pre?.speaker === speaker &&
+    !injection;
+
+  let prefetchedMp3: Uint8Array | null = null;
+  const text: string =
+    usePrefetchBuffer && pre ? pre.text : "";
+
+  if (usePrefetchBuffer && pre) {
+    prefetchedMp3 = Buffer.from(pre.audioBase64, "base64");
+    await clearPrefetch(roomId);
+  } else {
+    if (pre) await clearPrefetch(roomId);
+  }
+
   if (speaker === "A") delete room.pendingInterventionA;
   else delete room.pendingInterventionB;
   await saveRoom(room);
 
-  const persona =
-    speaker === "A"
-      ? { name: room.sideA.name, systemPrompt: room.sideA.systemPrompt }
-      : { name: room.sideB.name, systemPrompt: room.sideB.systemPrompt };
+  let finalText = text;
+  if (!usePrefetchBuffer) {
+    const persona =
+      speaker === "A"
+        ? { name: room.sideA.name, systemPrompt: room.sideA.systemPrompt }
+        : { name: room.sideB.name, systemPrompt: room.sideB.systemPrompt };
 
-  let text: string;
-  try {
-    const snapshot = await getRoom(roomId);
-    text = await generateDebateTurn({
-      topic: snapshot!.topic,
-      side: speaker,
-      personaName: persona.name,
-      systemPrompt: persona.systemPrompt,
-      moderatorInjection: injection,
-      transcript: snapshot!.transcript,
-    });
-  } catch (e) {
-    console.error("[debate] DeepSeek failed", e);
-    text = `[GENERATION ERROR — ${
-      speaker === "A" ? "Side A" : "Side B"
-    } could not respond. Continuing.]`;
+    try {
+      const snapshot = await getRoom(roomId);
+      finalText = await generateDebateTurn({
+        topic: snapshot!.topic,
+        side: speaker,
+        personaName: persona.name,
+        systemPrompt: persona.systemPrompt,
+        moderatorInjection: injection,
+        transcript: snapshot!.transcript,
+      });
+    } catch (e) {
+      console.error("[debate] DeepSeek failed", e);
+      finalText = `[GENERATION ERROR — ${
+        speaker === "A" ? "Side A" : "Side B"
+      } could not respond. Continuing.]`;
+    }
   }
 
   try {
-    await trigger(roomId, "turn-start", { speaker, text });
+    await trigger(roomId, "turn-start", { speaker, text: finalText });
 
-    const parts = text.split(/(\s+)/).filter((p) => p.length > 0);
+    const parts = finalText.split(/(\s+)/).filter((p) => p.length > 0);
     for (const p of parts) {
       await trigger(roomId, "turn-chunk", { speaker, textChunk: p });
     }
@@ -114,13 +137,12 @@ export async function runTurn(roomId: string): Promise<{
     await saveRoom(rUnlock);
   }
 
-  // Zapis transkryptu przed TTS — klient może od razu pobrać pełną listę przy uzupełnianiu luk audio.
   const fresh = await getRoom(roomId);
   if (!fresh) return { scheduleNext: false };
 
   fresh.transcript = [
     ...fresh.transcript,
-    { side: speaker, content: text, at: Date.now() },
+    { side: speaker, content: finalText, at: Date.now() },
   ];
   fresh.currentTurnIndex += 1;
 
@@ -129,7 +151,24 @@ export async function runTurn(roomId: string): Promise<{
   await saveRoom(fresh);
 
   try {
-    await scheduleTts({ roomId, speaker, text, turnIndex: thisTurnIndex });
+    if (
+      prefetchedMp3?.length &&
+      resolveTtsProvider() === "elevenlabs"
+    ) {
+      await streamMp3BufferToRoom({
+        roomId,
+        speaker,
+        turnIndex: thisTurnIndex,
+        buffer: prefetchedMp3,
+      });
+    } else {
+      await scheduleTts({
+        roomId,
+        speaker,
+        text: finalText,
+        turnIndex: thisTurnIndex,
+      });
+    }
   } catch (e) {
     console.error("[debate] TTS failed", e);
   }
@@ -137,6 +176,16 @@ export async function runTurn(roomId: string): Promise<{
   if (ended) {
     await trigger(roomId, "debate-ended", {});
     return { scheduleNext: false };
+  }
+
+  if (prefetchEnabled()) {
+    if (process.env.VERCEL) {
+      waitUntil(runPrefetchNextTurn(roomId));
+    } else {
+      void runPrefetchNextTurn(roomId).catch((e) =>
+        console.error("[prefetch]", e)
+      );
+    }
   }
 
   return { scheduleNext: true };
